@@ -1,46 +1,68 @@
- pipeline{
+pipeline {
     agent any
-      tools {
-        maven "maven3"
+     options {
+  buildDiscarder logRotator(artifactDaysToKeepStr: '', artifactNumToKeepStr: '', daysToKeepStr: '2', numToKeepStr: '2')
+}
+              parameters {
+  choice choices: ['main', 'dev'], name: 'Branch_Name'
+}
+    tools {
+  maven 'maven3.9.1'
+}
+    environment {
+        NEXUS_VERSION = "nexus3"
+        NEXUS_PROTOCOL = "http"
+        NEXUS_URL = "13.233.93.233:8081/"
+        NEXUS_REPOSITORY = "anil-snapshot-repo"
+        NEXUS_CREDENTIAL_ID = "nexus_credentials"
     }
-    stages{
-        stage("scm"){
-            steps{
-               git credentialsId: 'github_credentials', url: 'https://github.com/anilsoni007/spring-maven-hello-world.git'            }
-        }
-        stage("build"){
-            steps{
-              sh 'mvn package'        
-              }
-        }
-        stage("artifact"){
-            steps{
-           archiveArtifacts artifacts: 'target/*.war'
-           }
-        }
-      	stage('deploy') {
-             steps{
-                 withCredentials([usernameColonPassword(credentialsId: 'remote_tomcat_credentails', variable: 'tomcatcred')]) {
-                                      sh "curl -v -u $tomcatcred -T /var/lib/jenkins/workspace/git-maven/target/spring3-mvc-maven-xml-hello-world-1.0-SNAPSHOT.war 'http://ec2-65-0-72-74.ap-south-1.compute.amazonaws.com:8080/manager/text/deploy?path=/tomcat-pipeline&update=true'"
-                    }
-                
-             }
-             }
-         
-    }
-    post {
-        failure {
-            script {
-                currentBuild.result = 'FAILURE'
+    stages {
+        stage("Clone code from GitHub") {
+            steps {
+                git branch: "${params.Branch_Name}", changelog: false, credentialsId: 'anilsoni007', poll: false, url: 'https://github.com/anilsoni007/spring-maven-hello-world.git'
             }
         }
-
-        always {
-            step([$class: 'Mailer',
-                notifyEveryUnstableBuild: true,
-                recipients: "ybmadhuit@gmail.com,divyapathakota@gmail.com,kasi.umamaheswari7@gmail.com,Vasudhareddy87@gmajl.com",
-                sendToIndividuals: true])
+        stage("Maven Build") {
+            steps {
+                script {
+                    sh "mvn -Dmaven.test.failure.ignore=true clean package"
+                }
+            }
+        }
+        stage("Publish to Nexus Repository Manager") {
+            steps {
+                script {
+                    pom = readMavenPom file: "pom.xml";
+                    filesByGlob = findFiles(glob: "target/*.${pom.packaging}");
+                    echo "${filesByGlob[0].name} ${filesByGlob[0].path} ${filesByGlob[0].directory} ${filesByGlob[0].length} ${filesByGlob[0].lastModified}"
+                    artifactPath = filesByGlob[0].path;
+                    artifactExists = fileExists artifactPath;
+                    if(artifactExists) {
+                        echo "*** File: ${artifactPath}, group: ${pom.groupId}, packaging: ${pom.packaging}, version ${pom.version}";
+                        nexusArtifactUploader(
+                            nexusVersion: NEXUS_VERSION,
+                            protocol: NEXUS_PROTOCOL,
+                            nexusUrl: NEXUS_URL,
+                            groupId: pom.groupId,
+                            version: pom.version,
+                            repository: NEXUS_REPOSITORY,
+                            credentialsId: NEXUS_CREDENTIAL_ID,
+                            artifacts: [
+                                [artifactId: pom.artifactId,
+                                classifier: '',
+                                file: artifactPath,
+                                type: pom.packaging],
+                                [artifactId: pom.artifactId,
+                                classifier: '',
+                                file: "pom.xml",
+                                type: "pom"]
+                            ]
+                        );
+                    } else {
+                        error "*** File: ${artifactPath}, could not be found";
+                    }
+                }
+            }
         }
     }
- } 
- 
+}
